@@ -14,7 +14,14 @@ import {
   Zap,
   Activity,
   CheckCircle,
-  AlertTriangle
+  AlertTriangle,
+  Upload,
+  RefreshCw,
+  Eye,
+  BarChart2,
+  MapPin,
+  TrendingUp,
+  Grid
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -31,7 +38,10 @@ import {
   ScatterChart,
   Scatter,
   ZAxis,
-  Treemap
+  Treemap,
+  ComposedChart,
+  Sankey,
+  Legend
 } from 'recharts';
 
 import { 
@@ -49,8 +59,176 @@ import {
   MOCK_TREEMAP_DATA
 } from './constants';
 
-// Import Default Dataset from TS file to avoid JSON module resolution issues
+// Import Default Dataset
 import { DEFAULT_DATASET } from './defaultDataset';
+
+// --- Helper Functions ---
+
+const standardizeData = (input: string): DistributionRecord[] => {
+  try {
+    // Attempt JSON parse first
+    if (input.trim().startsWith('[') || input.trim().startsWith('{')) {
+      const parsed = JSON.parse(input);
+      const array = Array.isArray(parsed) ? parsed : [parsed];
+      // Simple mapping strategy (assigning fields if they match loosely)
+      return array.map((item: any) => ({
+        supplierId: item.supplierId || item.SupplierID || item.supplier || 'UNKNOWN',
+        deliveryDate: item.deliveryDate || item.DeliverDate || item.date || new Date().toISOString(),
+        customerId: item.customerId || item.CustomerID || item.customer || 'UNKNOWN',
+        licenseNo: item.licenseNo || item.LicenseNo || item.license || 'PENDING',
+        category: item.category || item.Category || 'General',
+        udid: item.udid || item.UDID || '',
+        model: item.model || item.Model || 'Standard',
+        lotNo: item.lotNo || item.LotNO || item.lot || '',
+        serialNo: item.serialNo || item.SerNo || item.SerialNo || '',
+      }));
+    }
+
+    // Attempt CSV parse
+    const lines = input.trim().split('\n');
+    if (lines.length > 1) {
+      const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+      return lines.slice(1).map(line => {
+        const values = line.split(',');
+        const record: any = {};
+        headers.forEach((h, i) => {
+           // Simple mapping
+           if (h.includes('supplier')) record.supplierId = values[i];
+           if (h.includes('date')) record.deliveryDate = values[i];
+           if (h.includes('customer')) record.customerId = values[i];
+           if (h.includes('license')) record.licenseNo = values[i];
+           if (h.includes('category')) record.category = values[i];
+           if (h.includes('model')) record.model = values[i];
+           if (h.includes('lot')) record.lotNo = values[i];
+           if (h.includes('ser')) record.serialNo = values[i];
+        });
+        // Defaults
+        return {
+          supplierId: record.supplierId || 'UNKNOWN',
+          deliveryDate: record.deliveryDate || new Date().toISOString(),
+          customerId: record.customerId || 'UNKNOWN',
+          licenseNo: record.licenseNo || 'PENDING',
+          category: record.category || 'General',
+          udid: '',
+          model: record.model || 'Standard',
+          lotNo: record.lotNo || '',
+          serialNo: record.serialNo || '',
+        } as DistributionRecord;
+      });
+    }
+    return [];
+  } catch (e) {
+    console.error("Standardization failed", e);
+    return [];
+  }
+};
+
+// Data Transformers for Charts
+
+const getSankeyData = (data: DistributionRecord[]) => {
+  // Nodes must be indexed. Flow: Supplier -> License -> Model -> Customer
+  const nodes: { name: string }[] = [];
+  const links: { source: number, target: number, value: number }[] = [];
+
+  const getNodeIndex = (name: string) => {
+    let idx = nodes.findIndex(n => n.name === name);
+    if (idx === -1) {
+      nodes.push({ name });
+      idx = nodes.length - 1;
+    }
+    return idx;
+  };
+
+  data.forEach(r => {
+    // Limit complexity for demo: only process first 50 records to avoid spaghetti graph
+    const supplier = `Sup: ${r.supplierId}`;
+    const license = `Lic: ${r.licenseNo.substring(0,6)}...`;
+    const model = `Mod: ${r.model}`;
+    const customer = `Cust: ${r.customerId}`;
+
+    const linkFlows = [
+      [supplier, license],
+      [license, model],
+      [model, customer]
+    ];
+
+    linkFlows.forEach(([src, trg]) => {
+      const sourceIdx = getNodeIndex(src);
+      const targetIdx = getNodeIndex(trg);
+      const existingLink = links.find(l => l.source === sourceIdx && l.target === targetIdx);
+      if (existingLink) {
+        existingLink.value += 1;
+      } else {
+        links.push({ source: sourceIdx, target: targetIdx, value: 1 });
+      }
+    });
+  });
+
+  return { nodes, links };
+};
+
+const getTemporalData = (data: DistributionRecord[]) => {
+  // Aggregate by Date
+  const agg: Record<string, number> = {};
+  data.forEach(r => {
+    const date = r.deliveryDate.substring(0, 8); // YYYYMMDD
+    agg[date] = (agg[date] || 0) + 1;
+  });
+  return Object.keys(agg).map(k => ({ date: k, count: agg[k] })).sort((a,b) => a.date.localeCompare(b.date));
+};
+
+const getParetoData = (data: DistributionRecord[]) => {
+  const counts: Record<string, number> = {};
+  data.forEach(r => { counts[r.model] = (counts[r.model] || 0) + 1; });
+  
+  const sorted = Object.keys(counts)
+    .map(k => ({ name: k, count: counts[k] }))
+    .sort((a, b) => b.count - a.count);
+  
+  const total = sorted.reduce((sum, item) => sum + item.count, 0);
+  let accumulated = 0;
+  return sorted.map(item => {
+    accumulated += item.count;
+    return {
+      ...item,
+      cumulative: Math.round((accumulated / total) * 100)
+    };
+  }).slice(0, 10); // Top 10
+};
+
+const getHeatmapData = (data: DistributionRecord[]) => {
+  // X: Model, Y: Customer, Z: Count
+  const map: Record<string, number> = {};
+  data.forEach(r => {
+    const key = `${r.model}::${r.customerId}`;
+    map[key] = (map[key] || 0) + 1;
+  });
+  return Object.keys(map).map(key => {
+    const [model, customer] = key.split('::');
+    return { model, customer, value: map[key] };
+  });
+};
+
+const getTreemapData = (data: DistributionRecord[]) => {
+  // Category -> Model
+  const tree: any = { name: 'Root', children: [] };
+  const categories: Record<string, Record<string, number>> = {};
+
+  data.forEach(r => {
+    if (!categories[r.category]) categories[r.category] = {};
+    categories[r.category][r.model] = (categories[r.category][r.model] || 0) + 1;
+  });
+
+  Object.keys(categories).forEach(cat => {
+    const catNode = { name: cat.substring(0, 15), children: [] as any[] };
+    Object.keys(categories[cat]).forEach(mod => {
+      catNode.children.push({ name: mod, size: categories[cat][mod] });
+    });
+    tree.children.push(catNode);
+  });
+  
+  return tree.children;
+};
 
 // --- Helper Components ---
 
@@ -81,7 +259,6 @@ const StatusStrip = ({ locale, tokens }: { locale: Locale, tokens: number }) => 
 const DashboardView = ({ locale, theme }: { locale: Locale, theme: PainterTheme }) => {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 p-6 animate-in fade-in duration-700">
-      
       {/* 1. Pulse Chart */}
       <div className="col-span-1 lg:col-span-2 p-6 rounded-2xl border border-[var(--color-border)] glass-panel shadow-lg">
         <h3 className="text-lg font-bold mb-4 flex items-center">
@@ -128,145 +305,311 @@ const DashboardView = ({ locale, theme }: { locale: Locale, theme: PainterTheme 
           </ResponsiveContainer>
         </div>
       </div>
-
-      {/* 3. Treemap / Portfolio */}
-      <div className="col-span-1 lg:col-span-3 p-6 rounded-2xl border border-[var(--color-border)] glass-panel shadow-lg">
-        <h3 className="text-lg font-bold mb-4">{TRANSLATIONS[locale]['chart.sankey']} (Portfolio Distribution)</h3>
-        <div className="h-48">
-          <ResponsiveContainer width="100%" height="100%">
-            <Treemap
-              data={MOCK_TREEMAP_DATA}
-              dataKey="size"
-              stroke="var(--color-surface)"
-              fill="var(--color-primary)"
-              content={({ root, depth, x, y, width, height, index, payload, colors, rank, name }) => {
-                 const fillColor = payload && payload.fill ? payload.fill : 'var(--color-primary)';
-                 return (
-                  <g>
-                    <rect
-                      x={x}
-                      y={y}
-                      width={width}
-                      height={height}
-                      style={{
-                        fill: depth < 2 ? fillColor : 'none',
-                        stroke: 'var(--color-surface)',
-                        strokeWidth: 2,
-                        strokeOpacity: 1,
-                      }}
-                    />
-                    {width > 50 && height > 30 ? (
-                      <text x={x + width / 2} y={y + height / 2} textAnchor="middle" fill="#fff" fontSize={14}>
-                        {name}
-                      </text>
-                    ) : null}
-                  </g>
-                );
-              }}
-            />
-          </ResponsiveContainer>
-        </div>
-      </div>
     </div>
   );
 };
 
-// 3. Comparison Lab
-const ComparisonLab = ({ locale, dataset }: { locale: Locale, dataset: DistributionRecord[] }) => {
+// 3. Comparison Lab (Advanced)
+const ComparisonLab = ({ locale, defaultData }: { locale: Locale, defaultData: DistributionRecord[] }) => {
+  const [activeTab, setActiveTab] = useState<'source' | 'visualize'>('source');
+  const [sourceType, setSourceType] = useState<'default' | 'custom'>('default');
+  const [customInput, setCustomInput] = useState('');
+  const [activeDataset, setActiveDataset] = useState<DistributionRecord[]>([]);
+  const [previewCount, setPreviewCount] = useState(20);
+
+  // Initialize with default
+  useEffect(() => {
+    setActiveDataset(defaultData);
+  }, [defaultData]);
+
+  // Handlers
+  const handleProcessCustom = () => {
+    const standardized = standardizeData(customInput);
+    if (standardized.length > 0) {
+      setActiveDataset(standardized);
+      alert(`Successfully processed ${standardized.length} records.`);
+    } else {
+      alert("Could not process data. Please ensure CSV or JSON format.");
+    }
+  };
+
+  const useDefault = () => {
+    setActiveDataset(defaultData);
+    setSourceType('default');
+  };
+
+  // Memoized Chart Data
+  const sankeyData = useMemo(() => getSankeyData(activeDataset.slice(0, 100)), [activeDataset]);
+  const temporalData = useMemo(() => getTemporalData(activeDataset), [activeDataset]);
+  const paretoData = useMemo(() => getParetoData(activeDataset), [activeDataset]);
+  const heatmapData = useMemo(() => getHeatmapData(activeDataset), [activeDataset]);
+  const treemapData = useMemo(() => getTreemapData(activeDataset), [activeDataset]);
+
   return (
-    <div className="p-6 animate-in slide-in-from-bottom-4 duration-500">
-      <h2 className="text-2xl font-bold mb-6">{TRANSLATIONS[locale]['nav.comparison']}</h2>
-      
-      {/* Dataset Status Banner */}
-      {dataset.length > 0 && (
-         <div className="mb-6 p-4 rounded-xl border border-[var(--color-primary)] bg-[var(--color-primary)] bg-opacity-10 flex items-center justify-between">
-            <div className="flex items-center">
-              <CheckCircle className="mr-3 text-[var(--color-primary)]" />
-              <div>
-                <h4 className="font-bold text-sm">Default Dataset Loaded</h4>
-                <p className="text-xs opacity-70">{dataset.length} records processed from defaultDataset.ts</p>
-              </div>
+    <div className="p-6 animate-in slide-in-from-bottom-4 duration-500 pb-20">
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-2xl font-bold">{TRANSLATIONS[locale]['nav.comparison']}</h2>
+        <div className="flex bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-1">
+          <button 
+            onClick={() => setActiveTab('source')}
+            className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${activeTab === 'source' ? 'bg-[var(--color-primary)] text-white shadow' : 'hover:bg-[var(--color-border)] hover:bg-opacity-20'}`}
+          >
+            Data Source
+          </button>
+          <button 
+            onClick={() => setActiveTab('visualize')}
+            className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${activeTab === 'visualize' ? 'bg-[var(--color-primary)] text-white shadow' : 'hover:bg-[var(--color-border)] hover:bg-opacity-20'}`}
+          >
+            Visualizations
+          </button>
+        </div>
+      </div>
+
+      {activeTab === 'source' && (
+        <div className="space-y-6">
+          {/* Source Selector */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+             <div 
+                onClick={useDefault}
+                className={`cursor-pointer p-6 rounded-xl border-2 transition-all flex flex-col items-center justify-center h-48 ${sourceType === 'default' ? 'border-[var(--color-primary)] bg-[var(--color-surface)] shadow-lg' : 'border-[var(--color-border)] border-dashed opacity-60 hover:opacity-100'}`}
+             >
+                <CheckCircle size={40} className={`mb-3 ${sourceType === 'default' ? 'text-[var(--color-primary)]' : 'text-[var(--color-muted)]'}`} />
+                <h3 className="font-bold text-lg">Default Dataset</h3>
+                <p className="text-sm text-center mt-2 opacity-70">Pre-loaded clean dataset ({defaultData.length} records)</p>
+             </div>
+
+             <div 
+                onClick={() => setSourceType('custom')}
+                className={`cursor-pointer p-6 rounded-xl border-2 transition-all flex flex-col items-center justify-center h-48 ${sourceType === 'custom' ? 'border-[var(--color-secondary)] bg-[var(--color-surface)] shadow-lg' : 'border-[var(--color-border)] border-dashed opacity-60 hover:opacity-100'}`}
+             >
+                <Upload size={40} className={`mb-3 ${sourceType === 'custom' ? 'text-[var(--color-secondary)]' : 'text-[var(--color-muted)]'}`} />
+                <h3 className="font-bold text-lg">Paste / Import</h3>
+                <p className="text-sm text-center mt-2 opacity-70">CSV, JSON, or Text</p>
+             </div>
+          </div>
+
+          {/* Custom Input Area */}
+          {sourceType === 'custom' && (
+            <div className="glass-panel p-6 rounded-xl border border-[var(--color-border)] animate-in fade-in">
+               <label className="block text-sm font-bold mb-2 flex items-center">
+                  <FileText className="mr-2" size={16} />
+                  Paste Raw Data
+               </label>
+               <textarea 
+                  value={customInput}
+                  onChange={(e) => setCustomInput(e.target.value)}
+                  className="w-full h-48 bg-[var(--color-bg)] border border-[var(--color-border)] rounded-lg p-4 font-mono text-xs focus:ring-2 focus:ring-[var(--color-accent)] outline-none"
+                  placeholder="Paste CSV (header required) or JSON array..."
+               />
+               <div className="flex justify-end mt-4">
+                  <button 
+                    onClick={handleProcessCustom}
+                    className="flex items-center px-6 py-2 bg-[var(--color-secondary)] text-white rounded-lg hover:opacity-90 shadow-lg"
+                  >
+                    <RefreshCw className="mr-2" size={16} />
+                    Process & Standardize
+                  </button>
+               </div>
             </div>
-            <button className="text-xs px-3 py-1 rounded border border-[var(--color-primary)] hover:bg-[var(--color-primary)] hover:text-white transition">
-              View Raw
-            </button>
-         </div>
-      )}
+          )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        {/* Upload A */}
-        <div className={`
-          border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center transition-all cursor-pointer relative overflow-hidden
-          ${dataset.length > 0 ? 'border-[var(--color-primary)] bg-[var(--color-surface)]' : 'border-[var(--color-border)] bg-[var(--color-surface)] bg-opacity-30 hover:bg-opacity-50'}
-        `}>
-          {dataset.length > 0 && <div className="absolute top-0 right-0 bg-[var(--color-primary)] text-white text-[10px] px-2 py-1 rounded-bl">Active</div>}
-          <div className="p-4 rounded-full bg-[var(--color-surface)] mb-4">
-             <Layers className={dataset.length > 0 ? "text-[var(--color-primary)]" : "text-[var(--color-muted)]"} size={32} />
-          </div>
-          <h4 className="font-bold">Supplier Dataset (A)</h4>
-          <p className="text-sm text-[var(--color-muted)] mt-2">
-            {dataset.length > 0 ? `${dataset[0].supplierId} - ${dataset.length} Items` : TRANSLATIONS[locale]['ui.dragdrop']}
-          </p>
-        </div>
-
-        {/* Upload B */}
-        <div className="border-2 border-dashed border-[var(--color-border)] rounded-xl p-8 flex flex-col items-center justify-center bg-[var(--color-surface)] bg-opacity-30 hover:bg-opacity-50 transition-all cursor-pointer">
-          <div className="p-4 rounded-full bg-[var(--color-surface)] mb-4">
-             <Layers className="text-[var(--color-secondary)]" size={32} />
-          </div>
-          <h4 className="font-bold">Customer Dataset (B)</h4>
-          <p className="text-sm text-[var(--color-muted)] mt-2">{TRANSLATIONS[locale]['ui.dragdrop']}</p>
-        </div>
-      </div>
-
-      {dataset.length > 0 && (
-        <div className="mt-8 overflow-x-auto rounded-xl border border-[var(--color-border)]">
-          <table className="w-full text-xs text-left">
-             <thead className="bg-[var(--color-surface)] border-b border-[var(--color-border)]">
-                <tr>
-                   <th className="p-3">Supplier</th>
-                   <th className="p-3">Date</th>
-                   <th className="p-3">Customer</th>
-                   <th className="p-3">License</th>
-                   <th className="p-3">Model</th>
-                   <th className="p-3">Lot</th>
-                </tr>
-             </thead>
-             <tbody className="divide-y divide-[var(--color-border)]">
-                {dataset.slice(0, 5).map((row, idx) => (
-                   <tr key={idx} className="hover:bg-[var(--color-surface)]">
-                      <td className="p-3 font-mono">{row.supplierId}</td>
-                      <td className="p-3">{row.deliveryDate}</td>
-                      <td className="p-3 font-mono">{row.customerId}</td>
-                      <td className="p-3">{row.licenseNo.substring(0, 10)}...</td>
-                      <td className="p-3">{row.model}</td>
-                      <td className="p-3 font-mono">{row.lotNo}</td>
-                   </tr>
-                ))}
-             </tbody>
-          </table>
-          <div className="p-2 text-center text-[10px] bg-[var(--color-surface)] opacity-50">
-             Showing first 5 records
+          {/* Preview Table */}
+          <div className="glass-panel p-6 rounded-xl border border-[var(--color-border)]">
+             <div className="flex justify-between items-center mb-4">
+                <h3 className="font-bold flex items-center">
+                   <Eye className="mr-2" size={18} />
+                   Dataset Preview
+                </h3>
+                <div className="flex items-center text-sm">
+                   <span className="mr-2 opacity-70">Show rows:</span>
+                   <input 
+                      type="number" 
+                      min="5" 
+                      max="100" 
+                      value={previewCount} 
+                      onChange={(e) => setPreviewCount(Number(e.target.value))}
+                      className="w-16 p-1 rounded border border-[var(--color-border)] bg-transparent text-center"
+                   />
+                </div>
+             </div>
+             
+             <div className="overflow-x-auto rounded-lg border border-[var(--color-border)]">
+                <table className="w-full text-xs">
+                   <thead className="bg-[var(--color-muted)] bg-opacity-20 border-b border-[var(--color-border)]">
+                      <tr>
+                         <th className="p-3 text-left">Supplier</th>
+                         <th className="p-3 text-left">Date</th>
+                         <th className="p-3 text-left">Customer</th>
+                         <th className="p-3 text-left">License</th>
+                         <th className="p-3 text-left">Model</th>
+                         <th className="p-3 text-left">Lot</th>
+                      </tr>
+                   </thead>
+                   <tbody className="divide-y divide-[var(--color-border)]">
+                      {activeDataset.length === 0 ? (
+                        <tr><td colSpan={6} className="p-4 text-center opacity-50">No data loaded</td></tr>
+                      ) : (
+                        activeDataset.slice(0, previewCount).map((row, i) => (
+                          <tr key={i} className="hover:bg-[var(--color-surface)]">
+                             <td className="p-3 font-mono">{row.supplierId}</td>
+                             <td className="p-3">{row.deliveryDate}</td>
+                             <td className="p-3 font-mono">{row.customerId}</td>
+                             <td className="p-3 truncate max-w-[150px]">{row.licenseNo}</td>
+                             <td className="p-3">{row.model}</td>
+                             <td className="p-3 font-mono">{row.lotNo}</td>
+                          </tr>
+                        ))
+                      )}
+                   </tbody>
+                </table>
+             </div>
+             <div className="mt-2 text-xs opacity-60 text-right">
+                Showing {Math.min(previewCount, activeDataset.length)} of {activeDataset.length} total records
+             </div>
           </div>
         </div>
       )}
 
-      <div className="mt-8 p-6 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)]">
-        <h3 className="font-bold mb-4 flex items-center">
-            <AlertTriangle className="mr-2 text-yellow-500" />
-            Inconsistency Simulation
-        </h3>
-        <div className="space-y-3">
-             <div className="flex justify-between items-center p-3 bg-red-500 bg-opacity-10 rounded border border-red-500 border-opacity-20">
-                <span>Missing Serial: SN-92938 (Detected in A, missing in B)</span>
-                <button className="px-3 py-1 bg-red-500 text-white rounded text-xs hover:bg-red-600">Reconcile</button>
-             </div>
-             <div className="flex justify-between items-center p-3 bg-yellow-500 bg-opacity-10 rounded border border-yellow-500 border-opacity-20">
-                <span>Date Mismatch: Lot #402 (Shipped Jan 1, Received Jan 5 - Threshold Exceeded)</span>
-                <button className="px-3 py-1 bg-yellow-500 text-white rounded text-xs hover:bg-yellow-600">Analyze</button>
-             </div>
+      {activeTab === 'visualize' && (
+        <div className="space-y-6">
+           {/* Graph 1: Sankey Network */}
+           <div className="glass-panel p-6 rounded-xl border border-[var(--color-border)] h-[400px]">
+              <h3 className="font-bold mb-4 flex items-center text-[var(--color-primary)]">
+                 <Grid className="mr-2" size={18} />
+                 Distribution Network Flow (Supplier &gt; License &gt; Model &gt; Customer)
+              </h3>
+              <ResponsiveContainer width="100%" height="100%">
+                 <Sankey 
+                    data={sankeyData} 
+                    node={{ stroke: 'var(--color-border)', strokeWidth: 1 }}
+                    nodePadding={50}
+                    link={{ stroke: 'var(--color-accent)', opacity: 0.3 }}
+                 >
+                    <Tooltip contentStyle={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-border)', color: 'var(--color-text)' }} />
+                 </Sankey>
+              </ResponsiveContainer>
+           </div>
+
+           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Graph 2: Temporal Pulse */}
+              <div className="glass-panel p-6 rounded-xl border border-[var(--color-border)] h-[300px]">
+                 <h3 className="font-bold mb-4 flex items-center">
+                    <Activity className="mr-2 text-[var(--color-secondary)]" size={18} />
+                    Temporal Pulse (Shipments over Time)
+                 </h3>
+                 <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={temporalData}>
+                       <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
+                       <XAxis dataKey="date" hide />
+                       <YAxis />
+                       <Tooltip contentStyle={{ backgroundColor: 'var(--color-surface)', color: 'var(--color-text)' }} />
+                       <Area type="monotone" dataKey="count" stroke="var(--color-secondary)" fill="var(--color-secondary)" fillOpacity={0.2} />
+                    </AreaChart>
+                 </ResponsiveContainer>
+              </div>
+
+              {/* Graph 3: Pareto Power Wall */}
+              <div className="glass-panel p-6 rounded-xl border border-[var(--color-border)] h-[300px]">
+                 <h3 className="font-bold mb-4 flex items-center">
+                    <TrendingUp className="mr-2 text-[var(--color-accent)]" size={18} />
+                    Pareto Power Wall (Top Models)
+                 </h3>
+                 <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={paretoData}>
+                       <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
+                       <XAxis dataKey="name" tick={{fontSize: 10}} />
+                       <YAxis yAxisId="left" />
+                       <YAxis yAxisId="right" orientation="right" unit="%" />
+                       <Tooltip contentStyle={{ backgroundColor: 'var(--color-surface)', color: 'var(--color-text)' }} />
+                       <Bar yAxisId="left" dataKey="count" fill="var(--color-primary)" barSize={20} />
+                       <Line yAxisId="right" type="monotone" dataKey="cumulative" stroke="var(--color-accent)" strokeWidth={2} />
+                    </ComposedChart>
+                 </ResponsiveContainer>
+              </div>
+           </div>
+
+           {/* Graph 4: Treemap Landscape */}
+           <div className="glass-panel p-6 rounded-xl border border-[var(--color-border)] h-[300px]">
+              <h3 className="font-bold mb-4 flex items-center">
+                 <Layers className="mr-2" size={18} />
+                 Portfolio Landscape (Category &gt; Model)
+              </h3>
+              <ResponsiveContainer width="100%" height="100%">
+                 <Treemap
+                    data={treemapData}
+                    dataKey="size"
+                    stroke="var(--color-bg)"
+                    fill="var(--color-primary)"
+                    aspectRatio={4/3}
+                    content={({ root, depth, x, y, width, height, index, payload, colors, rank, name }) => {
+                       return (
+                          <g>
+                             <rect
+                                x={x}
+                                y={y}
+                                width={width}
+                                height={height}
+                                style={{
+                                   fill: depth === 1 ? 'var(--color-primary)' : 'var(--color-secondary)',
+                                   fillOpacity: 0.1 + (0.1 * (index % 5)),
+                                   stroke: 'var(--color-bg)',
+                                   strokeWidth: 2,
+                                }}
+                             />
+                             {width > 30 && height > 20 && (
+                                <text x={x + 4} y={y + 14} fill="var(--color-text)" fontSize={10} fontWeight="bold">
+                                   {name}
+                                </text>
+                             )}
+                          </g>
+                       );
+                    }}
+                 />
+              </ResponsiveContainer>
+           </div>
+
+           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Graph 5: Mosaic Heatmap */}
+              <div className="glass-panel p-6 rounded-xl border border-[var(--color-border)] h-[300px]">
+                 <h3 className="font-bold mb-4 flex items-center">
+                    <Grid className="mr-2" size={18} />
+                    Customer-Model Mosaic
+                 </h3>
+                 <ResponsiveContainer width="100%" height="100%">
+                    <ScatterChart>
+                       <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
+                       <XAxis dataKey="model" type="category" name="Model" tick={{fontSize: 10}} />
+                       <YAxis dataKey="customer" type="category" name="Customer" tick={{fontSize: 10}} />
+                       <ZAxis dataKey="value" range={[50, 400]} name="Volume" />
+                       <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={{ backgroundColor: 'var(--color-surface)', color: 'var(--color-text)' }} />
+                       <Scatter name="Volume" data={heatmapData} fill="var(--color-accent)" shape="circle" />
+                    </ScatterChart>
+                 </ResponsiveContainer>
+              </div>
+
+               {/* Graph 6: Geospatial Proxy (Bar Chart by Region/Timezone) */}
+               <div className="glass-panel p-6 rounded-xl border border-[var(--color-border)] h-[300px]">
+                 <h3 className="font-bold mb-4 flex items-center">
+                    <MapPin className="mr-2" size={18} />
+                    Regional Distribution Proxy
+                 </h3>
+                 {/* 
+                     NOTE: Since we don't have lat/long in the simple dataset, 
+                     we simulate region grouping by Customer ID Prefix or similar 
+                 */}
+                 <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={activeDataset.slice(0, 20).map(r => ({ name: r.customerId, val: 1 }))}>
+                       <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
+                       <XAxis dataKey="name" tick={{fontSize: 10}} />
+                       <YAxis />
+                       <Tooltip contentStyle={{ backgroundColor: 'var(--color-surface)', color: 'var(--color-text)' }} />
+                       <Bar dataKey="val" fill="var(--color-muted)" name="Shipments" />
+                    </BarChart>
+                 </ResponsiveContainer>
+              </div>
+           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };
@@ -494,7 +837,7 @@ const App = () => {
 
              <div className="relative z-10">
                {activePage === Page.DASHBOARD && <DashboardView locale={locale} theme={activeTheme} />}
-               {activePage === Page.COMPARISON_LAB && <ComparisonLab locale={locale} dataset={distributionData} />}
+               {activePage === Page.COMPARISON_LAB && <ComparisonLab locale={locale} defaultData={distributionData} />}
                {activePage === Page.DOCUMENT_FACTORY && <DocumentFactory locale={locale} />}
                {activePage === Page.BATCH_PROCESSOR && (
                  <div className="flex items-center justify-center h-64 text-[var(--color-muted)] animate-in fade-in">
