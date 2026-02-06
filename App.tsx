@@ -49,6 +49,9 @@ import {
   MOCK_TREEMAP_DATA
 } from './constants';
 
+// Import Default Dataset from TS file to avoid JSON module resolution issues
+import { DEFAULT_DATASET } from './defaultDataset';
+
 // --- Helper Components ---
 
 // 1. Status Strip
@@ -169,19 +172,41 @@ const DashboardView = ({ locale, theme }: { locale: Locale, theme: PainterTheme 
 };
 
 // 3. Comparison Lab
-const ComparisonLab = ({ locale }: { locale: Locale }) => {
+const ComparisonLab = ({ locale, dataset }: { locale: Locale, dataset: DistributionRecord[] }) => {
   return (
     <div className="p-6 animate-in slide-in-from-bottom-4 duration-500">
       <h2 className="text-2xl font-bold mb-6">{TRANSLATIONS[locale]['nav.comparison']}</h2>
       
+      {/* Dataset Status Banner */}
+      {dataset.length > 0 && (
+         <div className="mb-6 p-4 rounded-xl border border-[var(--color-primary)] bg-[var(--color-primary)] bg-opacity-10 flex items-center justify-between">
+            <div className="flex items-center">
+              <CheckCircle className="mr-3 text-[var(--color-primary)]" />
+              <div>
+                <h4 className="font-bold text-sm">Default Dataset Loaded</h4>
+                <p className="text-xs opacity-70">{dataset.length} records processed from defaultDataset.ts</p>
+              </div>
+            </div>
+            <button className="text-xs px-3 py-1 rounded border border-[var(--color-primary)] hover:bg-[var(--color-primary)] hover:text-white transition">
+              View Raw
+            </button>
+         </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
         {/* Upload A */}
-        <div className="border-2 border-dashed border-[var(--color-border)] rounded-xl p-8 flex flex-col items-center justify-center bg-[var(--color-surface)] bg-opacity-30 hover:bg-opacity-50 transition-all cursor-pointer">
+        <div className={`
+          border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center transition-all cursor-pointer relative overflow-hidden
+          ${dataset.length > 0 ? 'border-[var(--color-primary)] bg-[var(--color-surface)]' : 'border-[var(--color-border)] bg-[var(--color-surface)] bg-opacity-30 hover:bg-opacity-50'}
+        `}>
+          {dataset.length > 0 && <div className="absolute top-0 right-0 bg-[var(--color-primary)] text-white text-[10px] px-2 py-1 rounded-bl">Active</div>}
           <div className="p-4 rounded-full bg-[var(--color-surface)] mb-4">
-             <Layers className="text-[var(--color-primary)]" size={32} />
+             <Layers className={dataset.length > 0 ? "text-[var(--color-primary)]" : "text-[var(--color-muted)]"} size={32} />
           </div>
           <h4 className="font-bold">Supplier Dataset (A)</h4>
-          <p className="text-sm text-[var(--color-muted)] mt-2">{TRANSLATIONS[locale]['ui.dragdrop']}</p>
+          <p className="text-sm text-[var(--color-muted)] mt-2">
+            {dataset.length > 0 ? `${dataset[0].supplierId} - ${dataset.length} Items` : TRANSLATIONS[locale]['ui.dragdrop']}
+          </p>
         </div>
 
         {/* Upload B */}
@@ -193,6 +218,38 @@ const ComparisonLab = ({ locale }: { locale: Locale }) => {
           <p className="text-sm text-[var(--color-muted)] mt-2">{TRANSLATIONS[locale]['ui.dragdrop']}</p>
         </div>
       </div>
+
+      {dataset.length > 0 && (
+        <div className="mt-8 overflow-x-auto rounded-xl border border-[var(--color-border)]">
+          <table className="w-full text-xs text-left">
+             <thead className="bg-[var(--color-surface)] border-b border-[var(--color-border)]">
+                <tr>
+                   <th className="p-3">Supplier</th>
+                   <th className="p-3">Date</th>
+                   <th className="p-3">Customer</th>
+                   <th className="p-3">License</th>
+                   <th className="p-3">Model</th>
+                   <th className="p-3">Lot</th>
+                </tr>
+             </thead>
+             <tbody className="divide-y divide-[var(--color-border)]">
+                {dataset.slice(0, 5).map((row, idx) => (
+                   <tr key={idx} className="hover:bg-[var(--color-surface)]">
+                      <td className="p-3 font-mono">{row.supplierId}</td>
+                      <td className="p-3">{row.deliveryDate}</td>
+                      <td className="p-3 font-mono">{row.customerId}</td>
+                      <td className="p-3">{row.licenseNo.substring(0, 10)}...</td>
+                      <td className="p-3">{row.model}</td>
+                      <td className="p-3 font-mono">{row.lotNo}</td>
+                   </tr>
+                ))}
+             </tbody>
+          </table>
+          <div className="p-2 text-center text-[10px] bg-[var(--color-surface)] opacity-50">
+             Showing first 5 records
+          </div>
+        </div>
+      )}
 
       <div className="mt-8 p-6 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)]">
         <h3 className="font-bold mb-4 flex items-center">
@@ -264,6 +321,9 @@ const App = () => {
   const [activePage, setActivePage] = useState<Page>(Page.DASHBOARD);
   const [isSidebarOpen, setSidebarOpen] = useState(true);
   const [tokenCount, setTokenCount] = useState(0);
+  
+  // State for Real Data
+  const [distributionData, setDistributionData] = useState<DistributionRecord[]>([]);
 
   // Derived state
   const activeTheme = useMemo(() => 
@@ -272,6 +332,13 @@ const App = () => {
   );
 
   const colors = activeTheme.colors[themeMode];
+
+  // Effect: Load Default Dataset
+  useEffect(() => {
+    // We cast to DistributionRecord[] because the raw data might have extra fields (like 'number') 
+    // or missing optional fields, but we want to treat it as our core type.
+    setDistributionData(DEFAULT_DATASET as unknown as DistributionRecord[]);
+  }, []);
 
   // Effect: Apply CSS Variables dynamically
   useEffect(() => {
@@ -427,7 +494,7 @@ const App = () => {
 
              <div className="relative z-10">
                {activePage === Page.DASHBOARD && <DashboardView locale={locale} theme={activeTheme} />}
-               {activePage === Page.COMPARISON_LAB && <ComparisonLab locale={locale} />}
+               {activePage === Page.COMPARISON_LAB && <ComparisonLab locale={locale} dataset={distributionData} />}
                {activePage === Page.DOCUMENT_FACTORY && <DocumentFactory locale={locale} />}
                {activePage === Page.BATCH_PROCESSOR && (
                  <div className="flex items-center justify-center h-64 text-[var(--color-muted)] animate-in fade-in">
