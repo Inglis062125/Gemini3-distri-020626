@@ -21,7 +21,11 @@ import {
   BarChart2,
   MapPin,
   TrendingUp,
-  Grid
+  Grid,
+  Filter,
+  Search,
+  Calendar,
+  XCircle
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -121,6 +125,15 @@ const standardizeData = (input: string): DistributionRecord[] => {
     console.error("Standardization failed", e);
     return [];
   }
+};
+
+// Mock inference for fields not present in simple CSVs (like TimeZone)
+const inferTimeZone = (customerId: string) => {
+    // Deterministic mock based on ID hash
+    const val = customerId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    if (val % 3 === 0) return 'UTC+8'; // Asia
+    if (val % 3 === 1) return 'UTC-5'; // US Est
+    return 'UTC+1'; // Europe
 };
 
 // Data Transformers for Charts
@@ -317,6 +330,19 @@ const ComparisonLab = ({ locale, defaultData }: { locale: Locale, defaultData: D
   const [activeDataset, setActiveDataset] = useState<DistributionRecord[]>([]);
   const [previewCount, setPreviewCount] = useState(20);
 
+  // Filter State
+  const [filters, setFilters] = useState({
+    supplierId: '',
+    category: '',
+    licenseNo: '',
+    model: '',
+    lotNo: '',
+    serialNo: '',
+    customerId: '',
+    timeZone: ''
+  });
+  const [isFilterExpanded, setIsFilterExpanded] = useState(true);
+
   // Initialize with default
   useEffect(() => {
     setActiveDataset(defaultData);
@@ -338,16 +364,69 @@ const ComparisonLab = ({ locale, defaultData }: { locale: Locale, defaultData: D
     setSourceType('default');
   };
 
-  // Memoized Chart Data
-  const sankeyData = useMemo(() => getSankeyData(activeDataset.slice(0, 100)), [activeDataset]);
-  const temporalData = useMemo(() => getTemporalData(activeDataset), [activeDataset]);
-  const paretoData = useMemo(() => getParetoData(activeDataset), [activeDataset]);
-  const heatmapData = useMemo(() => getHeatmapData(activeDataset), [activeDataset]);
-  const treemapData = useMemo(() => getTreemapData(activeDataset), [activeDataset]);
+  const clearFilters = () => {
+    setFilters({
+      supplierId: '',
+      category: '',
+      licenseNo: '',
+      model: '',
+      lotNo: '',
+      serialNo: '',
+      customerId: '',
+      timeZone: ''
+    });
+  };
+
+  // Filter Logic
+  const filteredDataset = useMemo(() => {
+    return activeDataset.filter(item => {
+      const tz = inferTimeZone(item.customerId);
+      return (
+        item.supplierId.toLowerCase().includes(filters.supplierId.toLowerCase()) &&
+        item.category.toLowerCase().includes(filters.category.toLowerCase()) &&
+        item.licenseNo.toLowerCase().includes(filters.licenseNo.toLowerCase()) &&
+        item.model.toLowerCase().includes(filters.model.toLowerCase()) &&
+        item.lotNo.toLowerCase().includes(filters.lotNo.toLowerCase()) &&
+        item.serialNo.toLowerCase().includes(filters.serialNo.toLowerCase()) &&
+        item.customerId.toLowerCase().includes(filters.customerId.toLowerCase()) &&
+        tz.toLowerCase().includes(filters.timeZone.toLowerCase())
+      );
+    });
+  }, [activeDataset, filters]);
+
+  // Memoized Chart Data (using filtered data)
+  const sankeyData = useMemo(() => getSankeyData(filteredDataset.slice(0, 100)), [filteredDataset]);
+  const temporalData = useMemo(() => getTemporalData(filteredDataset), [filteredDataset]);
+  const paretoData = useMemo(() => getParetoData(filteredDataset), [filteredDataset]);
+  const heatmapData = useMemo(() => getHeatmapData(filteredDataset), [filteredDataset]);
+  const treemapData = useMemo(() => getTreemapData(filteredDataset), [filteredDataset]);
+
+  // Sub-component for inputs
+  const FilterInput = ({ label, field, placeholder }: { label: string, field: keyof typeof filters, placeholder?: string }) => (
+    <div className="flex flex-col">
+       <label className="text-[10px] uppercase font-bold text-[var(--color-muted)] mb-1">{label}</label>
+       <div className="relative">
+          <input 
+            value={filters[field]} 
+            onChange={(e) => setFilters(prev => ({ ...prev, [field]: e.target.value }))}
+            className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md py-1 px-2 text-xs focus:ring-1 focus:ring-[var(--color-primary)] outline-none"
+            placeholder={placeholder || "All"}
+          />
+          {filters[field] && (
+            <button 
+              onClick={() => setFilters(prev => ({ ...prev, [field]: '' }))}
+              className="absolute right-1 top-1.5 text-[var(--color-muted)] hover:text-[var(--color-primary)]"
+            >
+              <XCircle size={10} />
+            </button>
+          )}
+       </div>
+    </div>
+  );
 
   return (
     <div className="p-6 animate-in slide-in-from-bottom-4 duration-500 pb-20">
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
         <h2 className="text-2xl font-bold">{TRANSLATIONS[locale]['nav.comparison']}</h2>
         <div className="flex bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-1">
           <button 
@@ -365,6 +444,48 @@ const ComparisonLab = ({ locale, defaultData }: { locale: Locale, defaultData: D
         </div>
       </div>
 
+      {/* FILTER BAR - Always Visible */}
+      <div className="glass-panel border border-[var(--color-border)] rounded-xl mb-6 overflow-hidden transition-all duration-300">
+         <div 
+           className="bg-[var(--color-muted)] bg-opacity-10 p-3 flex justify-between items-center cursor-pointer hover:bg-opacity-20"
+           onClick={() => setIsFilterExpanded(!isFilterExpanded)}
+         >
+            <div className="flex items-center font-bold text-sm">
+               <Filter className="mr-2 text-[var(--color-primary)]" size={16} />
+               Global Dataset Filters
+               <span className="ml-3 text-xs font-normal px-2 py-0.5 rounded-full bg-[var(--color-primary)] text-white">
+                  {filteredDataset.length} / {activeDataset.length} Records
+               </span>
+            </div>
+            <div className="text-xs text-[var(--color-muted)]">
+               {isFilterExpanded ? 'Click to collapse' : 'Click to expand'}
+            </div>
+         </div>
+         
+         {isFilterExpanded && (
+            <div className="p-4 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4 bg-[var(--color-surface)]">
+               <FilterInput label="Supplier ID" field="supplierId" />
+               <FilterInput label="Category" field="category" />
+               <FilterInput label="License No" field="licenseNo" />
+               <FilterInput label="Model" field="model" />
+               <FilterInput label="Lot No" field="lotNo" />
+               <FilterInput label="Serial No" field="serialNo" />
+               <FilterInput label="Customer ID" field="customerId" />
+               <FilterInput label="Time Zone (Inf)" field="timeZone" placeholder="e.g. UTC+8" />
+               
+               <div className="col-span-2 md:col-span-4 lg:col-span-8 flex justify-end pt-2 border-t border-[var(--color-border)] border-opacity-30 mt-2">
+                  <button 
+                    onClick={clearFilters}
+                    className="text-xs flex items-center text-[var(--color-secondary)] hover:underline"
+                  >
+                    <RefreshCw size={10} className="mr-1" />
+                    Reset Filters
+                  </button>
+               </div>
+            </div>
+         )}
+      </div>
+
       {activeTab === 'source' && (
         <div className="space-y-6">
           {/* Source Selector */}
@@ -375,7 +496,7 @@ const ComparisonLab = ({ locale, defaultData }: { locale: Locale, defaultData: D
              >
                 <CheckCircle size={40} className={`mb-3 ${sourceType === 'default' ? 'text-[var(--color-primary)]' : 'text-[var(--color-muted)]'}`} />
                 <h3 className="font-bold text-lg">Default Dataset</h3>
-                <p className="text-sm text-center mt-2 opacity-70">Pre-loaded clean dataset ({defaultData.length} records)</p>
+                <p className="text-sm text-center mt-2 opacity-70">Pre-loaded clean dataset</p>
              </div>
 
              <div 
@@ -419,6 +540,11 @@ const ComparisonLab = ({ locale, defaultData }: { locale: Locale, defaultData: D
                 <h3 className="font-bold flex items-center">
                    <Eye className="mr-2" size={18} />
                    Dataset Preview
+                   {activeDataset.length !== filteredDataset.length && (
+                     <span className="ml-2 text-xs font-normal text-[var(--color-secondary)] italic">
+                       (Filtered View)
+                     </span>
+                   )}
                 </h3>
                 <div className="flex items-center text-sm">
                    <span className="mr-2 opacity-70">Show rows:</span>
@@ -443,13 +569,14 @@ const ComparisonLab = ({ locale, defaultData }: { locale: Locale, defaultData: D
                          <th className="p-3 text-left">License</th>
                          <th className="p-3 text-left">Model</th>
                          <th className="p-3 text-left">Lot</th>
+                         <th className="p-3 text-left">Time Zone*</th>
                       </tr>
                    </thead>
                    <tbody className="divide-y divide-[var(--color-border)]">
-                      {activeDataset.length === 0 ? (
-                        <tr><td colSpan={6} className="p-4 text-center opacity-50">No data loaded</td></tr>
+                      {filteredDataset.length === 0 ? (
+                        <tr><td colSpan={7} className="p-4 text-center opacity-50">No data matches filters</td></tr>
                       ) : (
-                        activeDataset.slice(0, previewCount).map((row, i) => (
+                        filteredDataset.slice(0, previewCount).map((row, i) => (
                           <tr key={i} className="hover:bg-[var(--color-surface)]">
                              <td className="p-3 font-mono">{row.supplierId}</td>
                              <td className="p-3">{row.deliveryDate}</td>
@@ -457,6 +584,7 @@ const ComparisonLab = ({ locale, defaultData }: { locale: Locale, defaultData: D
                              <td className="p-3 truncate max-w-[150px]">{row.licenseNo}</td>
                              <td className="p-3">{row.model}</td>
                              <td className="p-3 font-mono">{row.lotNo}</td>
+                             <td className="p-3 opacity-60 italic">{inferTimeZone(row.customerId)}</td>
                           </tr>
                         ))
                       )}
@@ -464,7 +592,7 @@ const ComparisonLab = ({ locale, defaultData }: { locale: Locale, defaultData: D
                 </table>
              </div>
              <div className="mt-2 text-xs opacity-60 text-right">
-                Showing {Math.min(previewCount, activeDataset.length)} of {activeDataset.length} total records
+                Showing {Math.min(previewCount, filteredDataset.length)} of {filteredDataset.length} filtered records
              </div>
           </div>
         </div>
@@ -594,11 +722,14 @@ const ComparisonLab = ({ locale, defaultData }: { locale: Locale, defaultData: D
                     Regional Distribution Proxy
                  </h3>
                  {/* 
-                     NOTE: Since we don't have lat/long in the simple dataset, 
-                     we simulate region grouping by Customer ID Prefix or similar 
+                     NOTE: using inferred timezones for regional distribution
                  */}
                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={activeDataset.slice(0, 20).map(r => ({ name: r.customerId, val: 1 }))}>
+                    <BarChart data={Object.entries(filteredDataset.reduce((acc: any, curr) => {
+                        const tz = inferTimeZone(curr.customerId);
+                        acc[tz] = (acc[tz] || 0) + 1;
+                        return acc;
+                    }, {})).map(([name, val]) => ({ name, val }))}>
                        <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
                        <XAxis dataKey="name" tick={{fontSize: 10}} />
                        <YAxis />
